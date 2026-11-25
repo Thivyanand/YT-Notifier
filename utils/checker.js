@@ -264,22 +264,37 @@ async function checkForNewVideos(client) {
     `covering ${guildIds.reduce((sum, gid) => sum + Object.keys(channels[gid] || {}).length, 0)} subscription(s).`
   );
 
-  for (const [youtubeChannelId, subscribers] of channelToSubscribers) {
-    try {
-      const videos = await fetchLatestVideos(youtubeChannelId, 1);
-      if (videos.length === 0) {
-        await sleep(2000);
-        continue;
+  // Run a small bounded pool. RSS checks are lightweight (live discovery is
+  // intentionally excluded here and handled by the dedicated live checker).
+  const channelEntries = [...channelToSubscribers.entries()];
+  const concurrency = Math.min(8, channelEntries.length);
+  let nextIndex = 0;
+  const cycleStartedAt = Date.now();
+
+  async function worker() {
+    while (nextIndex < channelEntries.length) {
+      const index = nextIndex++;
+      const [youtubeChannelId, subscribers] = channelEntries[index];
+      const startedAt = Date.now();
+      try {
+        const videos = await withTimeout(
+          fetchLatestVideos(youtubeChannelId, 1, { includeLive: false }),
+          20_000,
+          `RSS check timed out for ${youtubeChannelId}`
+        );
+        if (videos.length > 0) {
+          await processNewVideoForSubscribers(client, youtubeChannelId, videos[0]);
+        }
+      } catch (error) {
+        console.error(`[Checker] ❌ Error checking channel ${youtubeChannelId}:`, error.message);
+      } finally {
+        console.log(`[Checker] ⏱ ${youtubeChannelId} checked in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
       }
-
-      await processNewVideoForSubscribers(client, youtubeChannelId, videos[0]);
-    } catch (error) {
-      console.error(`[Checker] ❌ Error checking channel ${youtubeChannelId}:`, error.message);
     }
-
-    // Small delay between unique channels (not per subscription) to avoid rate limits
-    await sleep(2000);
   }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  console.log(`[Checker] ✅ Cycle completed: ${channelEntries.length} channels in ${((Date.now() - cycleStartedAt) / 1000).toFixed(1)}s (pool=${concurrency}).`);
 
   // ── WebSub: make sure every currently-tracked channel has a live push
   // subscription, renew anything close to expiring, and drop subscriptions
@@ -291,6 +306,16 @@ async function checkForNewVideos(client) {
       console.error('[WebSub] Reconcile pass failed:', err.message);
     });
   }
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function sleep(ms) {
