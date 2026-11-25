@@ -398,7 +398,8 @@ async function fetchLatestVideosViaDataAPI(channelId, count = 5) {
  *
  * Returns an array of { id, title, link, published, author }.
  */
-async function fetchLatestVideos(channelId, count = 5) {
+async function fetchLatestVideos(channelId, count = 5, options = {}) {
+  const includeLive = options.includeLive !== false;
   const items = [];
   let rssFailed = false;
 
@@ -459,6 +460,8 @@ async function fetchLatestVideos(channelId, count = 5) {
   }
 
 
+  // Live discovery is optional. Polling mode keeps uploads lightweight; the dedicated live checker handles streams.
+  if (includeLive) {
   // Also try to detect currently-active live streams via Innertube.
   // RSS only includes a stream AFTER it ends as a VOD, so this is the only
   // way to catch a stream while it is happening.
@@ -507,6 +510,8 @@ async function fetchLatestVideos(channelId, count = 5) {
     if (!isExpected) {
       console.error(`[Innertube] Live stream check failed for ${channelId}:`, msg);
     }
+  }
+
   }
 
   if (items.length === 0) return [];
